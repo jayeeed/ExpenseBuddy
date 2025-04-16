@@ -1,0 +1,12 @@
+.venv
+.vscode
+__pycache__
+data
+old
+.env
+llm.zip
+receipt.png
+expenses.db
+.vercel
+app.zip
+quran.pdf
