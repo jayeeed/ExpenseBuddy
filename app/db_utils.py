@@ -13,7 +13,7 @@ def init_db():
     cursor = conn.cursor()
     cursor.execute(
         """
-        CREATE TABLE IF NOT EXISTS expenses (
+        CREATE TABLE IF NOT EXISTS expensex (
             id TEXT PRIMARY KEY,
             user_id TEXT,
             date TEXT,
@@ -39,7 +39,7 @@ def save_to_db(expense_data):
         cursor = conn.cursor()
         cursor.execute(
             """
-            INSERT INTO expenses (id, user_id, date, price, category, description)
+            INSERT INTO expensex (id, user_id, date, price, category, description)
             VALUES (%s, %s, %s, %s, %s, %s)
             """,
             (

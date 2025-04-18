@@ -15,21 +15,49 @@ tools = [
                     properties={
                         "id": types.Schema(
                             type=types.Type.STRING,
+                            example="12345",
+                            description="Unique identifier for the expense.",
                         ),
                         "user_id": types.Schema(
-                            type=types.Type.STRING,
+                            type=types.Type.INTEGER,
+                            example="user_123",
+                            description="Identifier for the user.",
                         ),
                         "date": types.Schema(
                             type=types.Type.STRING,
+                            example="2025-01-01",
+                            description="Date of the expense in YYYY-MM-DD format.",
                         ),
                         "price": types.Schema(
-                            type=types.Type.STRING,
+                            type=types.Type.NUMBER,
+                            example="100.00",
+                            description="Amount spent.",
                         ),
                         "category": types.Schema(
                             type=types.Type.STRING,
+                            example="Food",
+                            enum=[
+                                "Food",
+                                "Transport",
+                                "Entertainment",
+                                "Travel",
+                                "Other",
+                                "Health",
+                                "Shopping",
+                                "Utilities",
+                                "Education",
+                                "Miscellaneous",
+                                "Groceries",
+                                "Dining",
+                                "Subscriptions",
+                                "Gifts",
+                            ],
+                            description="Category of the expense.",
                         ),
                         "description": types.Schema(
                             type=types.Type.STRING,
+                            example="Lunch at a restaurant",
+                            description="Description of the expense.",
                         ),
                     },
                 ),
@@ -43,9 +71,35 @@ tools = [
                     properties={
                         "user_id": types.Schema(
                             type=types.Type.STRING,
+                            example="user_123",
+                            description="Identifier for the user.",
                         ),
                         "category": types.Schema(
                             type=types.Type.STRING,
+                            example="Food",
+                            enum=[
+                                "Food",
+                                "Transport",
+                                "Entertainment",
+                                "Travel",
+                                "Other",
+                                "Health",
+                                "Shopping",
+                                "Utilities",
+                                "Education",
+                                "Miscellaneous",
+                                "Groceries",
+                                "Dining",
+                                "Subscriptions",
+                                "Gifts",
+                            ],
+                            description="Category of the expense.",
+                        ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="en",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
                         ),
                     },
                 ),
@@ -55,16 +109,28 @@ tools = [
                 description="Fetch all expenses within a date range.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
-                    required=["start_date", "end_date"],
+                    required=["user_id", "start_date", "end_date"],
                     properties={
                         "user_id": types.Schema(
                             type=types.Type.STRING,
+                            example="user_123",
+                            description="Identifier for the user.",
                         ),
                         "start_date": types.Schema(
                             type=types.Type.STRING,
+                            example="2025-01-01",
+                            description="Start date of the range in YYYY-MM-DD format.",
                         ),
                         "end_date": types.Schema(
                             type=types.Type.STRING,
+                            example="2025-01-31",
+                            description="End date of the range in YYYY-MM-DD format.",
+                        ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="en",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
                         ),
                     },
                 ),
@@ -72,18 +138,21 @@ tools = [
         ]
     )
 ]
-tool_config = types.GenerateContentConfig(
+func_config = types.GenerateContentConfig(
     tools=tools,
     response_mime_type="text/plain",
+    tool_config=types.ToolConfig(
+        function_calling_config=types.FunctionCallingConfig(mode="ANY"),
+    ),
 )
 
 
 # This is the actual function that would be called based on the model's suggestion
 def save_expense(
     id: str,
-    user_id: str,
+    user_id: int,
     category: str,
-    price: str,
+    price: float,
     description: str = "",
     date: str = "",
 ) -> dict:
@@ -107,25 +176,22 @@ def save_expense(
 def get_expenses_by_category(user_id: str, category: str) -> dict:
     """Get expenses by category."""
     query = f"""
-        SELECT * FROM expenses
+        SELECT * FROM expensex
         WHERE user_id = '{user_id}' AND category = '{category.lower()}'
     """
 
     expenses = db_query(query)
 
-    print(f"Fetching expenses for user: {user_id}, category: {category}")
-
     return {"status": "success", "expenses": expenses}
 
 
-def get_expenses_by_date(user_id: str, date: str) -> dict:
+def get_expenses_by_date(user_id: str, start_date: str, end_date: str) -> dict:
     """Get expenses by date range."""
     query = f"""
-        SELECT * FROM expenses
-        WHERE user_id = '{user_id}' AND date = '{date}'
+        SELECT * FROM expensex
+        WHERE user_id = '{user_id}' AND date BETWEEN '{start_date}' AND '{end_date}'
     """
 
     expenses = db_query(query)
 
-    print(f"Fetching expenses for user: {user_id}, date: {date}")
     return {"status": "success", "expenses": expenses}

@@ -7,7 +7,12 @@ import logging
 from google.genai import types
 from fastapi import HTTPException, APIRouter
 from app.agent_gai import agent, generate_content_config
-from app.functions import save_expense, get_expenses_by_category, get_expenses_by_date
+from app.functions import (
+    save_expense,
+    get_expenses_by_category,
+    get_expenses_by_date,
+    func_config,
+)
 
 # Initialize FastAPI router and load environment variables.
 router = APIRouter()
@@ -17,6 +22,8 @@ PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 FB_MESSAGE_URL = (
     f"https://graph.facebook.com/v22.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
 )
+VISION_MODEL = "gemini-2.0-flash"
+TEXT_MODEL = "gemini-1.5-flash"
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +33,8 @@ logger = logging.getLogger(__name__)
 
 # Global states to manage unpaid warnings.
 unpaid_warned = set()
+
+current_date = date.now().strftime("%Y-%m-%d")
 
 
 def send_fb_message(recipient_id: str, message: dict) -> None:
@@ -49,11 +58,6 @@ def is_paid_user(sender_id: str) -> bool:
     """
     paid_ids = {"9317213844980928", "9502672683131798", "7573277649370618"}
     return str(sender_id) in paid_ids
-
-
-def current_time() -> str:
-    """Returns the current date and time in a specific format."""
-    return date.now().strftime("%Y-%m-%d")
 
 
 @router.post("/webhook")
@@ -116,7 +120,7 @@ async def receive_message(data: dict):
             # Use LLM to detect expense from image
             image_response = (
                 agent.models.generate_content(
-                    model="gemini-2.0-flash",
+                    model=VISION_MODEL,
                     contents=[
                         types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
                         "Detect expense from the image.",
@@ -141,7 +145,7 @@ async def receive_message(data: dict):
                 category=image_json.get("category", ""),
                 price=image_json.get("price", ""),
                 description=image_json.get("description", ""),
-                date=current_time(),
+                date=current_date,
             )
 
             # Send confirmation
@@ -149,7 +153,7 @@ async def receive_message(data: dict):
                 f"*{image_json.get('category', '').upper()}*\n"
                 f"*Expense*: {image_json.get('price', 0)}\n"
                 f"*Description*: {image_json.get('description', '')}\n"
-                f"*Date*: {current_time()}"
+                f"*Date*: {current_date}"
             )
             send_fb_message(sender_id, {"text": img_payload})
             return {"status": "saved_image", "sender_id": sender_id}
@@ -161,72 +165,102 @@ async def receive_message(data: dict):
                 raise HTTPException(
                     status_code=400, detail="No text provided in the message."
                 )
+            logger.info(f"Received user query: ********{user_query}********")
 
-            # Detect intent via LLM
+            current_date = date.now().strftime("%Y-%m-%d")
+
             intent_prompt = (
-                "Determine the intent of the following message. The possible intents are: "
-                "save_expense, get_by_category, get_by_date. Reply with a single intent keyword. "
-                f"Message: {user_query}"
+                "\n# Instructions: (Don't use these in response only for reference)"
+                f"\n# Note: 'today': {current_date}"
+                "\n- Use Current Date as date reference."
+                f"\n- Example: 'yesterday' (gotokal/গতকাল) will be day before {current_date} and 'tomorrow' (agamikal/আগামীকাল) will be day after {current_date}."
+                "\n- Week start from Sunday"
+                "\n- Weekend is Friday and Saturday"
+                "\n- For 'save_expense' function price must be given in number format in user query."
+                "\n- Don't use 'save_expense' function if user query doesn't contain price in numeric format."
+                "\n- Disregard insignificant/irrelevant terms related to expenses."
+                "\n- Don't ask for user id, it's given below."
+                f"user_id: '{sender_id}', \nuser_query: '{user_query}'"
             )
 
-            intent_resp = agent.models.generate_content(
-                model="gemini-2.0-flash",
+            intent_response = agent.models.generate_content(
+                model=TEXT_MODEL,
                 contents=intent_prompt,
-            ).text.strip()
+                config=func_config,
+            )
+            # logger.info(f"Intent response: {intent_response}")
 
-            intent = intent_resp.lower().strip()
+            intent_args = intent_response.function_calls[0].args
+            logger.info(f"Function params: {intent_args}")
 
-            logger.info(f"Detected intent: {intent}")
-
-            query = f"NOTE: Current date: {current_time}. use current date as reference for date parameter in user query: {user_query}"
+            intent = intent_response.function_calls[0].name
+            logger.info(f"Intent: {intent}")
 
             # Execute based on intent
             if intent == "save_expense":
-                # Let the LLM extract expense fields
-                extraction = (
-                    agent.models.generate_content(
-                        model="gemini-2.0-flash",
-                        contents=query,
-                        config=generate_content_config,
-                    )
-                    .text.strip("```json")
-                    .strip("```")
-                )
+                exp_category = intent_args.get("category", "")
+                exp_price = intent_args.get("price", "")
+                exp_description = intent_args.get("description", "")
 
-                try:
-                    expense = json.loads(extraction)
-                except json.JSONDecodeError:
-                    raise HTTPException(
-                        status_code=500,
-                        detail="Failed to parse the JSON expense from the model.",
-                    )
                 save_expense(
                     id=str(uuid.uuid4()),
                     user_id=sender_id,
-                    category=expense.get("category", ""),
-                    price=expense.get("price", ""),
-                    description=expense.get("description", ""),
-                    date=current_time(),
+                    category=exp_category,
+                    price=exp_price,
+                    description=exp_description,
+                    date=current_date,
                 )
                 send_fb_message(sender_id, {"text": "Expense saved successfully."})
 
-            elif intent == "get_by_category":
-                # Expect user_query contains category info
-                parts = user_query.split()
-                category = parts[-1]  # simplistic parsing
+            elif intent == "get_expense_by_category":
+                category = intent_args.get("category", "")
+
+                query_lang = intent_args.get("language", "")
+                logger.info(f"Language: {query_lang}")
+
+                if not category:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Category not provided in the intent response.",
+                    )
+
                 records = get_expenses_by_category(user_id=sender_id, category=category)
-                send_fb_message(
-                    sender_id, {"text": f"Expenses in {category}: {records}"}
+
+                normalizer_prompt = f"NOTE: language list: ['english', 'bengali']. Special case: Also reply in bengali if user query is in benglish (Bengali written using English characters). User query language: {query_lang}.\nSo response output must be in {query_lang} language. You have been given a list of expenses:\n\n{records}.\n\n Make sure to format the response in a concised (under 200 characters) human readable format. Just plain human like response. DO NOT include 'Expenses on 2025-04-18 for user 7573277649370618:' this kind of text on the response. Use currency symbol as Taka '৳'. Response:"
+
+                normalized_text = agent.models.generate_content(
+                    model=TEXT_MODEL,
+                    contents=normalizer_prompt,
+                ).text
+                logger.info(f"Normalizer response: {normalized_text}")
+
+                send_fb_message(sender_id, {"text": normalized_text})
+
+            elif intent == "get_expense_by_date":
+                start_date = intent_args.get("start_date", "")
+                end_date = intent_args.get("end_date", "")
+
+                query_lang = intent_args.get("language", "")
+                logger.info(f"Language: {query_lang}")
+
+                if not start_date or not end_date:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Date range not provided in the intent response.",
+                    )
+
+                records = get_expenses_by_date(
+                    user_id=sender_id, start_date=start_date, end_date=end_date
                 )
 
-            elif intent == "get_by_date":
-                # Expect date in YYYY-MM-DD format
-                parts = user_query.split()
-                query_date = parts[-1]
-                records = get_expenses_by_date(user_id=sender_id, date=query_date)
-                send_fb_message(
-                    sender_id, {"text": f"Expenses on {query_date}: {records}"}
-                )
+                normalizer_prompt = f"NOTE: language list: ['english', 'bengali']. Special case: Also reply in bengali if user query is in benglish (Bengali written using English characters). User query language: {query_lang}.\nSo response output must be in {query_lang} language. You have been given a list of expenses:\n\n{records}.\n\n Make sure to format the response in a concised (under 200 characters) human readable format. Just plain human like response. DO NOT include 'Expenses on 2025-04-18 for user 7573277649370618:' this kind of text on the response. Use currency symbol as Taka '৳'. Response:"
+
+                normalizer = agent.models.generate_content(
+                    model=TEXT_MODEL,
+                    contents=normalizer_prompt,
+                ).text
+
+                send_fb_message(sender_id, {"text": normalizer})
 
             else:
                 send_fb_message(sender_id, {"text": "Sorry, I didn't understand that."})

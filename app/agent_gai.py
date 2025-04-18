@@ -16,7 +16,7 @@ generate_content_config = types.GenerateContentConfig(
                 type=types.Type.STRING,
             ),
             "price": types.Schema(
-                type=types.Type.INTEGER,
+                type=types.Type.STRING,
             ),
             "description": types.Schema(
                 type=types.Type.STRING,
