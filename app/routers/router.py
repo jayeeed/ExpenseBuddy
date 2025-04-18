@@ -1,13 +1,13 @@
 from datetime import datetime as date
 import uuid
+import json
 import requests
 import os
 import logging
-from google.genai.types import *
-from fastapi import HTTPException, APIRouter
 from google.genai import types
+from fastapi import HTTPException, APIRouter
 from app.agent_gai import agent, generate_content_config
-from app.functions import save_expense
+from app.functions import save_expense, get_expenses_by_category, get_expenses_by_date
 
 # Initialize FastAPI router and load environment variables.
 router = APIRouter()
@@ -32,9 +32,9 @@ def send_fb_message(recipient_id: str, message: dict) -> None:
     """Helper function to send a Facebook message."""
     try:
         response = requests.post(
-            FB_MESSAGE_URL, json={"recipient": {"id": recipient_id}, "message": message}
+            FB_MESSAGE_URL,
+            json={"recipient": {"id": recipient_id}, "message": message},
         )
-
         logger.info(
             f"Sent message to {recipient_id}. Response code: {response.status_code}, Response text: {response.text}"
         )
@@ -51,35 +51,9 @@ def is_paid_user(sender_id: str) -> bool:
     return str(sender_id) in paid_ids
 
 
-def get_chat_history(user_id: str) -> str:
-    """Fetches the latest 5 incoming messages from the Facebook Conversations API for a specific user."""
-    fb_api_url = (
-        f"https://graph.facebook.com/v22.0/me/conversations?"
-        f"fields=messages{{message,from,created_time}}&access_token={PAGE_ACCESS_TOKEN}"
-    )
-    response = requests.get(fb_api_url)
-    history_text = ""
-    if response.status_code == 200:
-        fb_json = response.json()
-        messages_list = [
-            msg
-            for conv in fb_json.get("data", [])
-            for msg in conv.get("messages", {}).get("data", [])
-            if str(msg.get("from", {}).get("id")) == str(user_id)
-        ]
-        messages_list.sort(key=lambda m: m.get("created_time", ""), reverse=True)
-        latest_five = messages_list[:5]
-        history_text = "\n".join(
-            [f"User: {msg.get('message', '')}" for msg in latest_five]
-        )
-    else:
-        logger.error(f"Failed to fetch latest messages: {response.text}")
-    return history_text
-
-
 def current_time() -> str:
     """Returns the current date and time in a specific format."""
-    return date.now().strftime("%Y-%m-%d %H:%M:%S")
+    return date.now().strftime("%Y-%m-%d")
 
 
 @router.post("/webhook")
@@ -115,85 +89,36 @@ async def receive_message(data: dict):
                 unpaid_warned.add(sender_id)
             return {"status": "not_paid", "sender_id": sender_id}
 
-        # Process text messages.
-        if "message" in message_data and "text" in message_data["message"]:
-            user_query = message_data["message"]["text"]
-            if not user_query:
-                raise HTTPException(
-                    status_code=400, detail="No text provided in the message."
-                )
-
-            text_response = (
-                agent.models.generate_content(
-                    model="gemini-2.0-flash",
-                    contents=user_query,
-                    config=generate_content_config,
-                )
-                .text.strip("```json")
-                .strip("```")
-            )
-
-            logger.info(f"Text response: {text_response}")
-
-            # Parse the JSON response.
-            try:
-                text_response = json.loads(text_response)
-            except json.JSONDecodeError:
-                raise HTTPException(
-                    status_code=500,
-                    detail="Failed to parse the JSON response from the model.",
-                )
-
-            text_payload = (
-                f"*{text_response.get('category', '').strip().upper()}*\n\n"
-                f"*Expense*: ${text_response.get('price', 0)}\n\n"
-                f"*Description*: {text_response.get('description', '').strip()}\n\n"
-                f"*Date*: {current_time()}\n\n"
-            )
-
-            send_fb_message(sender_id, {"text": text_payload})
-
-            save_expense(
-                id=str(uuid.uuid4()),
-                user_id=sender_id,
-                category=text_response.get("category", ""),
-                price=text_response.get("price", ""),
-                description=text_response.get("description", ""),
-                date=current_time(),
-            )
-
-        elif "message" in message_data and "attachments" in message_data["message"]:
+        # Determine if message has attachments (URL)
+        if "message" in message_data and "attachments" in message_data["message"]:
+            # Always treat attachments as save_expense
             attachments = message_data["message"]["attachments"]
-
-            if attachments and isinstance(attachments, list):
-                reciept_img = attachments[0].get("payload", {}).get("url")
-                if not reciept_img:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="No valid image URL provided in the message.",
-                    )
-            else:
+            if not attachments or not isinstance(attachments, list):
                 raise HTTPException(
                     status_code=400, detail="No attachments found in the message."
                 )
+            receipt_url = attachments[0].get("payload", {}).get("url")
+            if not receipt_url:
+                raise HTTPException(
+                    status_code=400,
+                    detail="No valid image URL provided in the message.",
+                )
 
-            response = requests.get(reciept_img)
-            if response.status_code == 200:
-                img_bytes = response.content
-            else:
+            # Fetch image bytes
+            response = requests.get(receipt_url)
+            if response.status_code != 200:
                 raise HTTPException(
                     status_code=400,
                     detail="Failed to fetch the image from the provided URL.",
                 )
+            img_bytes = response.content
 
+            # Use LLM to detect expense from image
             image_response = (
                 agent.models.generate_content(
                     model="gemini-2.0-flash",
                     contents=[
-                        types.Part.from_bytes(
-                            data=img_bytes,
-                            mime_type="image/jpeg",
-                        ),
+                        types.Part.from_bytes(data=img_bytes, mime_type="image/jpeg"),
                         "Detect expense from the image.",
                     ],
                     config=generate_content_config,
@@ -201,35 +126,119 @@ async def receive_message(data: dict):
                 .text.strip("```json")
                 .strip("```")
             )
-
-            # Parse the JSON response.
             try:
-                image_response = json.loads(image_response)
-                logger.info(f"Image response: {image_response}")
+                image_json = json.loads(image_response)
             except json.JSONDecodeError:
                 raise HTTPException(
                     status_code=500,
                     detail="Failed to parse the JSON response from the model.",
                 )
 
-            img_payload = (
-                f"*{image_response.get('category', '').strip().upper()}*\n\n"
-                f"*Expense*: {image_response.get('price', 0)}\n\n"
-                f"*Description*: {image_response.get('description', '').strip()}\n\n"
-                f"*Date*: {current_time()}\n\n"
-            )
-
-            send_fb_message(sender_id, {"text": img_payload})
-
+            # Save expense
             save_expense(
                 id=str(uuid.uuid4()),
                 user_id=sender_id,
-                category=image_response.get("category", ""),
-                price=image_response.get("price", ""),
-                description=image_response.get("description", ""),
+                category=image_json.get("category", ""),
+                price=image_json.get("price", ""),
+                description=image_json.get("description", ""),
                 date=current_time(),
             )
 
+            # Send confirmation
+            img_payload = (
+                f"*{image_json.get('category', '').upper()}*\n"
+                f"*Expense*: {image_json.get('price', 0)}\n"
+                f"*Description*: {image_json.get('description', '')}\n"
+                f"*Date*: {current_time()}"
+            )
+            send_fb_message(sender_id, {"text": img_payload})
+            return {"status": "saved_image", "sender_id": sender_id}
+
+        # Process text messages
+        if "message" in message_data and "text" in message_data["message"]:
+            user_query = message_data["message"]["text"]
+            if not user_query:
+                raise HTTPException(
+                    status_code=400, detail="No text provided in the message."
+                )
+
+            # Detect intent via LLM
+            intent_prompt = (
+                "Determine the intent of the following message. The possible intents are: "
+                "save_expense, get_by_category, get_by_date. Reply with a single intent keyword. "
+                f"Message: {user_query}"
+            )
+
+            intent_resp = agent.models.generate_content(
+                model="gemini-2.0-flash",
+                contents=intent_prompt,
+            ).text.strip()
+
+            intent = intent_resp.lower().strip()
+
+            logger.info(f"Detected intent: {intent}")
+
+            query = f"NOTE: Current date: {current_time}. use current date as reference for date parameter in user query: {user_query}"
+
+            # Execute based on intent
+            if intent == "save_expense":
+                # Let the LLM extract expense fields
+                extraction = (
+                    agent.models.generate_content(
+                        model="gemini-2.0-flash",
+                        contents=query,
+                        config=generate_content_config,
+                    )
+                    .text.strip("```json")
+                    .strip("```")
+                )
+
+                try:
+                    expense = json.loads(extraction)
+                except json.JSONDecodeError:
+                    raise HTTPException(
+                        status_code=500,
+                        detail="Failed to parse the JSON expense from the model.",
+                    )
+                save_expense(
+                    id=str(uuid.uuid4()),
+                    user_id=sender_id,
+                    category=expense.get("category", ""),
+                    price=expense.get("price", ""),
+                    description=expense.get("description", ""),
+                    date=current_time(),
+                )
+                send_fb_message(sender_id, {"text": "Expense saved successfully."})
+
+            elif intent == "get_by_category":
+                # Expect user_query contains category info
+                parts = user_query.split()
+                category = parts[-1]  # simplistic parsing
+                records = get_expenses_by_category(user_id=sender_id, category=category)
+                send_fb_message(
+                    sender_id, {"text": f"Expenses in {category}: {records}"}
+                )
+
+            elif intent == "get_by_date":
+                # Expect date in YYYY-MM-DD format
+                parts = user_query.split()
+                query_date = parts[-1]
+                records = get_expenses_by_date(user_id=sender_id, date=query_date)
+                send_fb_message(
+                    sender_id, {"text": f"Expenses on {query_date}: {records}"}
+                )
+
+            else:
+                send_fb_message(sender_id, {"text": "Sorry, I didn't understand that."})
+
+            return {"status": intent, "sender_id": sender_id}
+
+        # No matching handler
+        return {"status": "no_action", "sender_id": sender_id}
+
+    except HTTPException as he:
+        logger.error(f"HTTPException in webhook endpoint: {he.detail}")
+        raise he
     except Exception as e:
         logger.error(f"Error in webhook endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))

@@ -21,6 +21,9 @@ generate_content_config = types.GenerateContentConfig(
             "description": types.Schema(
                 type=types.Type.STRING,
             ),
+            "date": types.Schema(
+                type=types.Type.STRING,
+            ),
         },
     ),
 )

@@ -1,55 +1,81 @@
 import json
-from app.db_utils import save_to_db
+from app.db_utils import save_to_db, db_query
 from google.genai import types
 
-# 1) Save a new expense record
-save_expense_decl = {
-    "name": "save_expense",
-    "description": "Persist an expense record to the database.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "id": {"type": "string", "description": "UUID of the expense"},
-            "user_id": {"type": "string", "description": "ID of the user"},
-            "date": {"type": "string", "description": "ISO date of the expense"},
-            "price": {"type": "float", "description": "Amount spent in whole units"},
-            "category": {"type": "string", "description": "Expense category"},
-            "description": {"type": "string", "description": "Free‐form description"},
-        },
-        "required": ["id", "user_id", "date", "price", "category", "description"],
-    },
-}
 
-# 2) Query by category
-get_by_cat_decl = {
-    "name": "get_expense_by_category",
-    "description": "Fetch all expenses in a given category.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "user_id": {"type": "string", "description": "User ID"},
-            "category": {"type": "string", "description": "Expense category to filter"},
-        },
-        "required": ["user_id", "category"],
-    },
-}
-
-# 3) Query by date range
-get_by_date_decl = {
-    "name": "get_expense_by_date",
-    "description": "Fetch all expenses within a date range.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "user_id": {"type": "string", "description": "User ID"},
-            "start_date": {"type": "string", "description": "Start ISO date"},
-            "end_date": {"type": "string", "description": "End ISO date"},
-        },
-        "required": ["user_id", "start_date", "end_date"],
-    },
-}
-
-function_declarations = [save_expense_decl, get_by_cat_decl, get_by_date_decl]
+tools = [
+    types.Tool(
+        function_declarations=[
+            types.FunctionDeclaration(
+                name="save_expense",
+                description="Persist an expense record to the database.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    required=["user_id", "price", "category"],
+                    properties={
+                        "id": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "date": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "price": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "category": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "description": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="get_expense_by_category",
+                description="Fetch all expenses for a specific category.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    required=["user_id", "category"],
+                    properties={
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "category": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="get_expense_by_date",
+                description="Fetch all expenses within a date range.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    required=["start_date", "end_date"],
+                    properties={
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "start_date": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                        "end_date": types.Schema(
+                            type=types.Type.STRING,
+                        ),
+                    },
+                ),
+            ),
+        ]
+    )
+]
+tool_config = types.GenerateContentConfig(
+    tools=tools,
+    response_mime_type="text/plain",
+)
 
 
 # This is the actual function that would be called based on the model's suggestion
@@ -76,3 +102,30 @@ def save_expense(
 
     print(f"Saving expense: {user_id}, {category}, {price}, {description}, {date}")
     return {"status": "success", "message": "Expense saved successfully."}
+
+
+def get_expenses_by_category(user_id: str, category: str) -> dict:
+    """Get expenses by category."""
+    query = f"""
+        SELECT * FROM expenses
+        WHERE user_id = '{user_id}' AND category = '{category.lower()}'
+    """
+
+    expenses = db_query(query)
+
+    print(f"Fetching expenses for user: {user_id}, category: {category}")
+
+    return {"status": "success", "expenses": expenses}
+
+
+def get_expenses_by_date(user_id: str, date: str) -> dict:
+    """Get expenses by date range."""
+    query = f"""
+        SELECT * FROM expenses
+        WHERE user_id = '{user_id}' AND date = '{date}'
+    """
+
+    expenses = db_query(query)
+
+    print(f"Fetching expenses for user: {user_id}, date: {date}")
+    return {"status": "success", "expenses": expenses}
