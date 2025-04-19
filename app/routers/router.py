@@ -8,10 +8,11 @@ from google.genai import types
 from fastapi import HTTPException, APIRouter
 from app.agent_gai import agent, generate_content_config
 from app.functions import (
-    get_all_expenses,
     save_expense,
+    get_all_expenses,
     get_expenses_by_category,
     get_expenses_by_date,
+    get_breakdown,
     func_config,
 )
 
@@ -113,11 +114,10 @@ def transcribe_audio_attachment(sender_id: str, attachment: dict) -> str:
     llm_resp = agent.models.generate_content(
         model=TEXT_MODEL,
         contents=[part, prompt],
-    )
-    send_fb_message(sender_id, {"text": llm_resp.text})
+    ).text
 
-    # strip any markdown/code fences
-    return llm_resp.text.strip("```").strip()
+    send_fb_message(sender_id, {"text": llm_resp})
+    return llm_resp
 
 
 def handle_attachment_event(sender_id: str, attachments: list) -> None:
@@ -147,10 +147,18 @@ def handle_attachment_event(sender_id: str, attachments: list) -> None:
         send_fb_message(sender_id, {"text": "Sorry, I couldn't save your expense."})
 
 
-def call_intent_llm(sender_id: str, user_query: str) -> tuple[str, dict]:
+def call_intent_llm(sender_id: str, user_query: str) -> list[tuple[str, dict]]:
     """
-    Ask the LLM to choose one of our functions and return (function_name, args).
+    Ask the LLM to choose one or more of our functions and return
+    a list of (function_name, args) tuples.
     """
+    query_lang = agent.models.generate_content(
+        model=TEXT_MODEL,
+        contents=f"just reply with the language name of the query language. query: {user_query}\n\n eg; ['english', 'bengali']",
+    ).text
+
+    logger.info(f"Query language: {query_lang}")
+
     current_date = datetime.now().strftime("%Y-%m-%d")
     user_prompt = (
         "\n# Instructions: (Don't use these in response only for reference)"
@@ -163,30 +171,31 @@ def call_intent_llm(sender_id: str, user_query: str) -> tuple[str, dict]:
         "\n- Decline function call if price is 0 or not numeric."
         "\n- Disregard irrelevant terms."
         "\n- Don't ask for user id, it's given below."
-        f"\nuser_id: '{sender_id}', user_query: '{user_query}'"
+        f"\nuser_id: '{sender_id}', user_query: '{user_query}', must reply in language: '{query_lang}'. Response:"
     )
 
     resp = agent.models.generate_content(
         model=TEXT_MODEL, contents=user_prompt, config=func_config
     )
 
-    fc = resp.function_calls[0]
-    raw_args = fc.args
-    try:
-        args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
-        logger.info(
-            f"\n*************************************\n"
-            f"Function call: {fc.name}, args: {args}\n"
-            "*************************************\n"
-        )
-    except json.JSONDecodeError:
-        logger.error(f"Could not parse function args JSON: {raw_args}")
-        args = {}
+    logger.info(f"LLM response: {resp}")
 
-    return fc.name, args
+    calls: list[tuple[str, dict]] = []
+    for fc in resp.function_calls:
+        raw = fc.args
+        try:
+            args = json.loads(raw) if isinstance(raw, str) else raw
+        except json.JSONDecodeError:
+            logger.error(f"Could not parse args for {fc.name}: {raw}")
+            args = {}
+        logger.info(f"Function call: {fc.name}, args: {args}")
+        calls.append((fc.name, args))
+
+    return calls
 
 
 def query_summary(records, query_lang):
+    logger.info(f"whqudhkjashjkdcdqiwd: {query_lang}")
     prompt = (
         f"NOTE: language list: ['english','bengali'].\n"
         f"User query language: {query_lang}.\n"
@@ -196,92 +205,121 @@ def query_summary(records, query_lang):
     )
 
     summary = agent.models.generate_content(model=TEXT_MODEL, contents=prompt).text
-
     return summary
 
 
+def merge_responses_with_llm(replies: list[str]) -> str:
+    """
+    Ask the LLM to combine multiple bullet points or short sentences
+    into one cohesive, friendly reply.
+    """
+    merge_prompt = (
+        "You are an assistant that merges multiple bullet points or short sentences "
+        "into one cohesive, friendly reply. Combine the following items:\n\n"
+        + "\n\n".join(f"- {r}" for r in replies)
+        + "\n\nFinal Response:"
+    )
+    llm_resp = agent.models.generate_content(model=TEXT_MODEL, contents=[merge_prompt])
+    return llm_resp.text.strip()
+
+
 def handle_text_event(sender_id: str, text: str) -> None:
-    """Dispatch on the LLM‑determined intent."""
-    intent, args = call_intent_llm(sender_id, text)
-    expense_date = args.get("date") or datetime.now().strftime("%Y-%m-%d")
+    """
+    Dispatch on all LLM‑determined function calls, accumulate each result,
+    then send one merged, natural response.
+    """
+    calls = call_intent_llm(sender_id, text)
+    replies: list[str] = []
 
-    if intent == "save_expense":
-        try:
-            save_expense(
-                id=str(uuid.uuid4()),
-                user_id=sender_id,
-                category=args.get("category", ""),
-                price=args.get("price", 0),
-                description=args.get("description", ""),
-                date=args.get("date", expense_date),
-            )
-            reply = (
-                f"*{args.get('category','').upper()}* saved!\n\n"
-                f"• Amount: {args.get('price',0)}\n"
-                f"• Description: {args.get('description','')}\n"
-                f"• Date: {args.get('date', expense_date)}"
-            )
-            send_fb_message(sender_id, {"text": reply})
+    for intent, args in calls:
+        args.setdefault("date", datetime.now().strftime("%Y-%m-%d"))
 
-        except Exception as e:
-            logger.error(f"Error in save_expense branch: {e}")
-            send_fb_message(sender_id, {"text": "Sorry, I couldn't save your expense."})
-
-    elif intent == "get_expenses_by_category":
-        try:
-            category = args.get("category", "")
-            query_lang = args.get("language", "bengali")
-            records = get_expenses_by_category(user_id=sender_id, category=category)
-            if not records:
-                send_fb_message(
-                    sender_id, {"text": "No expenses found in that category."}
+        if intent == "save_expense":
+            try:
+                save_expense(
+                    id=str(uuid.uuid4()),
+                    user_id=sender_id,
+                    category=args.get("category", ""),
+                    price=args.get("price", 0),
+                    description=args.get("description", ""),
+                    date=args["date"],
                 )
-                return
-            summary = query_summary(records, query_lang)
-            send_fb_message(sender_id, {"text": summary})
+                replies.append(
+                    f"*{args.get('category','').upper()}* saved! "
+                    f"(৳{args.get('price',0)}, {args['date']})"
+                )
+            except Exception as e:
+                logger.error(f"Error in save_expense: {e}")
+                replies.append("⚠️ Sorry, I couldn't save one of your expenses.")
 
-        except Exception as e:
-            logger.error(f"Error fetching by category: {e}")
-            send_fb_message(sender_id, {"text": "Couldn't retrieve your expenses."})
+        elif intent == "get_expenses_by_category":
+            try:
+                category = args.get("category", "")
+                query_lang = args.get("language", "")
+                records = get_expenses_by_category(user_id=sender_id, category=category)
+                if not records:
+                    replies.append(f"No expenses found in category '{category}'.")
+                else:
+                    replies.append(query_summary(records, query_lang))
+            except Exception as e:
+                logger.error(f"Error fetching by category: {e}")
+                replies.append("⚠️ Couldn't retrieve expenses by category.")
 
-    elif intent == "get_expenses_by_date":
-        try:
-            start_date = args.get("start_date", "")
-            end_date = args.get("end_date", "")
-            query_lang = args.get("language", "bengali")
-            records = get_expenses_by_date(
-                user_id=sender_id,
-                start_date=start_date,
-                end_date=end_date,
-            )
-            if not records:
-                send_fb_message(sender_id, {"text": "No expenses found on that date."})
-                return
-            summary = query_summary(records, query_lang)
-            send_fb_message(sender_id, {"text": summary})
+        elif intent == "get_expenses_by_date":
+            try:
+                start = args.get("start_date", "")
+                end = args.get("end_date", "")
+                query_lang = args.get("language", "")
+                records = get_expenses_by_date(
+                    user_id=sender_id, start_date=start, end_date=end
+                )
+                if not records:
+                    replies.append(f"No expenses found between {start} and {end}.")
+                else:
+                    replies.append(query_summary(records, query_lang))
+            except Exception as e:
+                logger.error(f"Error fetching by date: {e}")
+                replies.append("⚠️ Couldn't retrieve expenses by date.")
 
-        except Exception as e:
-            logger.error(f"Error fetching by date: {e}")
-            send_fb_message(sender_id, {"text": "Couldn't retrieve your expenses."})
+        elif intent == "get_all_expenses":
+            try:
+                query_lang = args.get("language", "")
+                records = get_all_expenses(user_id=sender_id)
+                if not records:
+                    replies.append("No expenses found.")
+                else:
+                    replies.append(query_summary(records, query_lang))
+            except Exception as e:
+                logger.error(f"Error fetching all expenses: {e}")
+                replies.append("⚠️ Couldn't retrieve all expenses.")
 
-    elif intent == "get_all_expenses":
-        try:
-            records = get_all_expenses(user_id=sender_id)
-            if not records:
-                send_fb_message(sender_id, {"text": "No expenses found."})
-                return
-            summary = query_summary(records, "bengali")
-            send_fb_message(sender_id, {"text": summary})
+        elif intent == "get_breakdown":
+            try:
+                query_lang = args.get("language", "")
+                records = get_breakdown(user_id=sender_id)
+                if not records:
+                    replies.append("No expenses to break down.")
+                else:
+                    replies.append(query_summary(records, query_lang))
+            except Exception as e:
+                logger.error(f"Error fetching breakdown: {e}")
+                replies.append("⚠️ Couldn't retrieve expense breakdown.")
 
-        except Exception as e:
-            logger.error(f"Error fetching all expenses: {e}")
-            send_fb_message(sender_id, {"text": "Couldn't retrieve your expenses."})
+        elif intent == "greetings":
+            replies.append("Hello! How can I help you today?")
 
-    elif intent == "greetings":
-        send_fb_message(sender_id, {"text": "Hello! How can I help you today?"})
+        else:
+            replies.append("Sorry, I didn't understand that request.")
 
+    if not replies:
+        send_fb_message(sender_id, {"text": "Sorry, I couldn't process your request."})
+        return
+
+    if len(replies) > 1:
+        merged = merge_responses_with_llm(replies)
+        send_fb_message(sender_id, {"text": merged})
     else:
-        send_fb_message(sender_id, {"text": "Sorry, I didn't understand that."})
+        send_fb_message(sender_id, {"text": replies[0]})
 
 
 @router.post("/webhook")
@@ -315,12 +353,11 @@ async def receive_message(data: dict):
     if attachments:
         kind = attachments[0].get("type")
         if kind == "audio":
-            # Transcribe and treat as text
             text = transcribe_audio_attachment(sender_id, attachments[0])
             handle_text_event(sender_id, text)
         else:
-            # Image expense
             handle_attachment_event(sender_id, attachments)
+
     elif "text" in message:
         handle_text_event(sender_id, message["text"])
 

@@ -73,6 +73,7 @@ response = client.models.generate_content(
     config=config,
     contents="Turn this place into a party",
 )
+print(response)
 
 # Print out each of the function calls requested from this single call
 print("Example 1: Forced function calling")
