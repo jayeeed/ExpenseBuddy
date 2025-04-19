@@ -21,9 +21,7 @@ router = APIRouter()
 PAGE_ID = os.getenv("PAGE_ID")
 PAGE_ACCESS_TOKEN = os.getenv("PAGE_ACCESS_TOKEN")
 FB_MSG_API_BASE = os.getenv("FB_MSG_API_BASE")
-FB_MESSAGE_URL = (
-    f"https://graph.facebook.com/v22.0/me/messages?access_token={PAGE_ACCESS_TOKEN}"
-)
+FB_MESSAGE_URL = f"{FB_MSG_API_BASE}{PAGE_ACCESS_TOKEN}"
 
 VISION_MODEL = os.getenv("VISION_MODEL")
 TEXT_MODEL = os.getenv("TEXT_MODEL")
