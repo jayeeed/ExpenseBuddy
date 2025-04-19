@@ -1,5 +1,5 @@
 import json
-from app.db_utils import save_to_db, db_query
+from app.db_utils import db_query
 from google.genai import types
 
 
@@ -13,11 +13,6 @@ tools = [
                     type=types.Type.OBJECT,
                     required=["user_id", "price", "category"],
                     properties={
-                        "id": types.Schema(
-                            type=types.Type.STRING,
-                            example="12345",
-                            description="Unique identifier for the expense.",
-                        ),
                         "user_id": types.Schema(
                             type=types.Type.INTEGER,
                             example="user_123",
@@ -31,7 +26,7 @@ tools = [
                         "price": types.Schema(
                             type=types.Type.NUMBER,
                             example="100.00",
-                            description="Amount spent.",
+                            description="Amount spent in float.",
                         ),
                         "category": types.Schema(
                             type=types.Type.STRING,
@@ -41,7 +36,6 @@ tools = [
                                 "Transport",
                                 "Entertainment",
                                 "Travel",
-                                "Other",
                                 "Health",
                                 "Shopping",
                                 "Utilities",
@@ -82,7 +76,6 @@ tools = [
                                 "Transport",
                                 "Entertainment",
                                 "Travel",
-                                "Other",
                                 "Health",
                                 "Shopping",
                                 "Utilities",
@@ -157,26 +150,20 @@ def save_expense(
     date: str = "",
 ) -> dict:
     """Save expense to db."""
-    expense_data = {
-        "id": id,
-        "user_id": user_id,
-        "category": category,
-        "price": price,
-        "description": description,
-        "date": date,
-    }
+    query = f"""
+        INSERT INTO expenses (id, user_id, category, price, description, date)
+        VALUES ('{id}', {user_id}, '{category.lower()}', {price}, '{description.lower()}', '{date}')
+    """
 
-    # Save to database (assuming save_to_db is a function that handles DB operations)
-    save_to_db(expense_data)
+    db_query(query)
 
-    print(f"Saving expense: {user_id}, {category}, {price}, {description}, {date}")
-    return {"status": "success", "message": "Expense saved successfully."}
+    return {"status": "success", "message": "expenses saved"}
 
 
 def get_expenses_by_category(user_id: str, category: str) -> dict:
     """Get expenses by category."""
     query = f"""
-        SELECT * FROM expensex
+        SELECT * FROM expenses
         WHERE user_id = '{user_id}' AND category = '{category.lower()}'
     """
 
@@ -188,7 +175,7 @@ def get_expenses_by_category(user_id: str, category: str) -> dict:
 def get_expenses_by_date(user_id: str, start_date: str, end_date: str) -> dict:
     """Get expenses by date range."""
     query = f"""
-        SELECT * FROM expensex
+        SELECT * FROM expenses
         WHERE user_id = '{user_id}' AND date BETWEEN '{start_date}' AND '{end_date}'
     """
 
