@@ -2,9 +2,9 @@ import os
 from google import genai
 from google.genai import types
 
-GEMENI_API_KEY = os.getenv("GEMENI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-agent = genai.Client(api_key=GEMENI_API_KEY)
+agent = genai.Client(api_key=GEMINI_API_KEY)
 
 generate_content_config = types.GenerateContentConfig(
     response_mime_type="application/json",

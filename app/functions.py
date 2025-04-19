@@ -1,6 +1,24 @@
 import json
 from app.db_utils import save_to_db, db_query
 from google.genai import types
+from enum import Enum
+
+
+class Category(Enum):
+    FOOD = "food"
+    TRAVEL = "travel"
+    TRANSPORT = "transport"
+    REPAIR = "repair"
+    ENTERTAINMENT = "entertainment"
+    UTILITIES = "utilities"
+    GROCERY = "grocery"
+    SHOPPING = "shopping"
+    ELECTRONICS = "electronics"
+    HEALTH = "health"
+    MISCELLANEOUS = "miscellaneous"
+    AUTOMOBILE = "automobile"
+    OTHER = "other"
+    NONE = "none"
 
 
 tools = [
@@ -31,21 +49,6 @@ tools = [
                         "category": types.Schema(
                             type=types.Type.STRING,
                             example="Food",
-                            enum=[
-                                "Food",
-                                "Transport",
-                                "Entertainment",
-                                "Travel",
-                                "Health",
-                                "Shopping",
-                                "Utilities",
-                                "Education",
-                                "Miscellaneous",
-                                "Groceries",
-                                "Dining",
-                                "Subscriptions",
-                                "Gifts",
-                            ],
                             description="Category of the expense.",
                         ),
                         "description": types.Schema(
@@ -55,7 +58,7 @@ tools = [
                         ),
                         "language": types.Schema(
                             type=types.Type.STRING,
-                            example="en",
+                            example="english",
                             enum=["english", "bengali"],
                             description="Language of the query.",
                         ),
@@ -71,32 +74,17 @@ tools = [
                     properties={
                         "user_id": types.Schema(
                             type=types.Type.STRING,
-                            example="user_123",
+                            example="738126784619",
                             description="Identifier for the user.",
                         ),
                         "category": types.Schema(
                             type=types.Type.STRING,
                             example="Food",
-                            enum=[
-                                "Food",
-                                "Transport",
-                                "Entertainment",
-                                "Travel",
-                                "Health",
-                                "Shopping",
-                                "Utilities",
-                                "Education",
-                                "Miscellaneous",
-                                "Groceries",
-                                "Dining",
-                                "Subscriptions",
-                                "Gifts",
-                            ],
                             description="Category of the expense.",
                         ),
                         "language": types.Schema(
                             type=types.Type.STRING,
-                            example="en",
+                            example="english",
                             enum=["english", "bengali"],
                             description="Language of the query.",
                         ),
@@ -112,7 +100,7 @@ tools = [
                     properties={
                         "user_id": types.Schema(
                             type=types.Type.STRING,
-                            example="user_123",
+                            example="738126784619",
                             description="Identifier for the user.",
                         ),
                         "start_date": types.Schema(
@@ -134,25 +122,101 @@ tools = [
                     },
                 ),
             ),
+            types.FunctionDeclaration(
+                name="greetings",
+                description="Greet the user.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                            example="738126784619",
+                            description="Identifier for the user.",
+                        ),
+                        "greeting": types.Schema(
+                            type=types.Type.STRING,
+                            example="Hi/Hello",
+                            description="Greeting message.",
+                        ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="english",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
+                        ),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="irrelevant",
+                description="Output for irrelevant queries.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                            example="738126784619",
+                            description="Identifier for the user.",
+                        ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="english",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
+                        ),
+                        "query": types.Schema(
+                            type=types.Type.STRING,
+                            example="Want to know latest news",
+                            description="irrelevant query.",
+                        ),
+                    },
+                ),
+            ),
+            types.FunctionDeclaration(
+                name="get_all_expenses",
+                description="Fetch all expenses.",
+                parameters=types.Schema(
+                    type=types.Type.OBJECT,
+                    properties={
+                        "user_id": types.Schema(
+                            type=types.Type.STRING,
+                            example="738126784619",
+                            description="Identifier for the user.",
+                        ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="english",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
+                        ),
+                    },
+                ),
+            ),
         ]
     )
 ]
 func_config = types.GenerateContentConfig(
     tools=tools,
     response_mime_type="text/plain",
-    tool_config=types.ToolConfig(
-        function_calling_config=types.FunctionCallingConfig(mode="ANY"),
-    ),
-    system_instruction="You are a helpful assistant which will only execute functions regarding expense related queries. Must be in English or Bengali. Must select category from the following list: Food, Transport, Entertainment, Travel, Health, Shopping, Utilities, Education, Miscellaneous, Groceries, Dining, Subscriptions, Gifts.",
+    # tool_config=types.ToolConfig(
+    #     function_calling_config=types.FunctionCallingConfig(mode="AUTO"),
+    # ),
+    system_instruction="You are a helpful assistant which will only execute functions regarding expense related queries. Must be in English or Bengali. Must select category from the following list: Food, Transport, Entertainment, Travel, Health, Shopping, Utilities, Education, Miscellaneous, Groceries, Dining, Subscriptions, Gifts. Get appropiate catagory according to user query. If can't decide category just use 'miscellaneous'.",
 )
+
+# func_config = {
+#     "tools": tools,
+#     "automatic_function_calling": {"disable": True},
+#     "tool_config": {"function_calling_config": {"mode": "any"}},
+# }
 
 
 # This is the actual function that would be called based on the model's suggestion
 def save_expense(
     id: str,
-    user_id: str,
-    category: str,
-    price: str,
+    user_id: int,
+    category: Category,
+    price: float,
     description: str = "",
     date: str = "",
 ) -> dict:
@@ -171,16 +235,22 @@ def save_expense(
     return {"status": "success", "message": "Expense saved!"}
 
 
-def get_expenses_by_category(user_id: str, category: str) -> dict:
+def get_all_expenses(user_id: str) -> dict:
+    """Get all expenses."""
+    query = f"""SELECT * FROM expenses
+                WHERE user_id = '{user_id}'"""
+
+    return db_query(query)
+
+
+def get_expenses_by_category(user_id: str, category: Category) -> dict:
     """Get expenses by category."""
     query = f"""
         SELECT * FROM expenses
         WHERE user_id = '{user_id}' AND category = '{category.lower()}'
     """
 
-    expenses = db_query(query)
-
-    return {"status": "success", "expenses": expenses}
+    return db_query(query)
 
 
 def get_expenses_by_date(user_id: str, start_date: str, end_date: str) -> dict:
@@ -190,6 +260,4 @@ def get_expenses_by_date(user_id: str, start_date: str, end_date: str) -> dict:
         WHERE user_id = '{user_id}' AND date BETWEEN '{start_date}' AND '{end_date}'
     """
 
-    expenses = db_query(query)
-
-    return {"status": "success", "expenses": expenses}
+    return db_query(query)
