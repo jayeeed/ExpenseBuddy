@@ -34,6 +34,26 @@ def init_db():
 conn = init_db()
 
 
+def save_to_db(expense_data):
+    conn = psycopg2.connect(db_uri)
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO expenses (id, user_id, date, price, category, description)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            expense_data["id"],
+            expense_data["user_id"],
+            expense_data["date"],
+            expense_data["price"],
+            expense_data["category"].lower(),
+            expense_data["description"].lower(),
+        ),
+    )
+    conn.commit()
+
+
 def db_query(query):
     conn = psycopg2.connect(db_uri)
     cursor = conn.cursor(cursor_factory=RealDictCursor)

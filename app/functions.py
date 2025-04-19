@@ -1,5 +1,5 @@
 import json
-from app.db_utils import db_query
+from app.db_utils import save_to_db, db_query
 from google.genai import types
 
 
@@ -15,7 +15,7 @@ tools = [
                     properties={
                         "user_id": types.Schema(
                             type=types.Type.INTEGER,
-                            example="user_123",
+                            example="738126784619",
                             description="Identifier for the user.",
                         ),
                         "date": types.Schema(
@@ -53,11 +53,17 @@ tools = [
                             example="Lunch at a restaurant",
                             description="Description of the expense.",
                         ),
+                        "language": types.Schema(
+                            type=types.Type.STRING,
+                            example="en",
+                            enum=["english", "bengali"],
+                            description="Language of the query.",
+                        ),
                     },
                 ),
             ),
             types.FunctionDeclaration(
-                name="get_expense_by_category",
+                name="get_expenses_by_category",
                 description="Fetch all expenses for a specific category.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
@@ -98,7 +104,7 @@ tools = [
                 ),
             ),
             types.FunctionDeclaration(
-                name="get_expense_by_date",
+                name="get_expenses_by_date",
                 description="Fetch all expenses within a date range.",
                 parameters=types.Schema(
                     type=types.Type.OBJECT,
@@ -137,27 +143,32 @@ func_config = types.GenerateContentConfig(
     tool_config=types.ToolConfig(
         function_calling_config=types.FunctionCallingConfig(mode="ANY"),
     ),
+    system_instruction="You are a helpful assistant which will only execute functions regarding expense related queries. Must be in English or Bengali. Must select category from the following list: Food, Transport, Entertainment, Travel, Health, Shopping, Utilities, Education, Miscellaneous, Groceries, Dining, Subscriptions, Gifts.",
 )
 
 
 # This is the actual function that would be called based on the model's suggestion
 def save_expense(
     id: str,
-    user_id: int,
+    user_id: str,
     category: str,
-    price: float,
+    price: str,
     description: str = "",
     date: str = "",
 ) -> dict:
     """Save expense to db."""
-    query = f"""
-        INSERT INTO expenses (id, user_id, category, price, description, date)
-        VALUES ('{id}', {user_id}, '{category.lower()}', {price}, '{description.lower()}', '{date}')
-    """
+    expense_data = {
+        "id": id,
+        "user_id": user_id,
+        "category": category,
+        "price": price,
+        "description": description,
+        "date": date,
+    }
 
-    db_query(query)
+    save_to_db(expense_data)
 
-    return {"status": "success", "message": "expenses saved"}
+    return {"status": "success", "message": "Expense saved!"}
 
 
 def get_expenses_by_category(user_id: str, category: str) -> dict:

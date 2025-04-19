@@ -127,6 +127,7 @@ def call_intent_llm(sender_id: str, user_query: str) -> tuple[str, dict]:
     raw_args = fc.args
     try:
         args = json.loads(raw_args) if isinstance(raw_args, str) else raw_args
+        logger.info(f"Function call: {fc.name}, args: {args}")
     except json.JSONDecodeError:
         logger.error(f"Could not parse function args JSON: {raw_args}")
         args = {}
@@ -150,7 +151,6 @@ def handle_text_event(sender_id: str, text: str) -> None:
                 description=args.get("description", ""),
                 date=args.get("date", expense_date),
             )
-            logger.info(f"Saved expense: {args}")
 
             reply = (
                 f"*{args.get('category','').upper()}* saved!\n\n"
@@ -168,7 +168,11 @@ def handle_text_event(sender_id: str, text: str) -> None:
 
     elif intent == "get_expenses_by_category":
         try:
-            records = get_expenses_by_category(user_id=sender_id, **args)
+            category = args.get("category", "")
+
+            records = get_expenses_by_category(user_id=sender_id, category=category)
+            query_lang = args.get("language", "bengali")
+
             if not records:
                 send_fb_message(
                     sender_id, {"text": "No expenses found in that category."}
@@ -176,7 +180,8 @@ def handle_text_event(sender_id: str, text: str) -> None:
                 return
 
             # Let the LLM format nicely
-            prompt = f"Format these records concisely: {records}"
+            prompt = f"NOTE: language list: ['english', 'bengali']. Special case: Also reply in bengali if user query is in benglish (Bengali written using English characters). User query language: {query_lang}.\nSo response output must be in {query_lang} language. You have been given a list of expenses:\n\n{records}.\n\n Make sure to format the response in a concised (under 200 characters) human readable format. Just plain human like response. DO NOT include 'Expenses on 2025-04-18 for user 7573277649370618:' this kind of text on the response. Use currency symbol as Taka '৳'. Response:"
+
             summary = agent.models.generate_content(
                 model=TEXT_MODEL, contents=prompt
             ).text
@@ -187,7 +192,15 @@ def handle_text_event(sender_id: str, text: str) -> None:
 
     elif intent == "get_expenses_by_date":
         try:
-            records = get_expenses_by_date(user_id=sender_id, **args)
+            start_date = args.get("start_date", "")
+            end_date = args.get("end_date", "")
+
+            records = get_expenses_by_date(
+                user_id=sender_id,
+                start_date=start_date,
+                end_date=end_date,
+            )
+
             if not records:
                 send_fb_message(sender_id, {"text": "No expenses found on that date."})
                 return
