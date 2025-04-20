@@ -4,6 +4,7 @@ import json
 import requests
 import os
 import logging
+from typing import List, Tuple
 from google.genai import types
 from fastapi import HTTPException, APIRouter
 from app.agent_gai import agent, generate_content_config
@@ -76,6 +77,7 @@ def fetch_and_parse_attachment(attachment: dict) -> dict:
         raise HTTPException(status_code=400, detail="Failed to fetch attachment.")
 
     part = types.Part.from_bytes(data=resp.content, mime_type="image/jpeg")
+
     prompt = (
         "Detect expense from the image and return a JSON object with keys: "
         "category, price, description, date."
@@ -147,55 +149,58 @@ def handle_attachment_event(sender_id: str, attachments: list) -> None:
         send_fb_message(sender_id, {"text": "Sorry, I couldn't save your expense."})
 
 
-def call_intent_llm(sender_id: str, user_query: str) -> list[tuple[str, dict]]:
+def call_intent_llm(
+    sender_id: str, user_query: str
+) -> Tuple[List[Tuple[str, dict]], str]:
     """
-    Ask the LLM to choose one or more of our functions and return
-    a list of (function_name, args) tuples.
+    Ask the LLM to choose one or more of our functions, and detect the query language.
+    Returns a tuple of:
+      - calls: list of (function_name, args_dict)
+      - query_lang: e.g. "english" or "bengali"
     """
+    # first, detect language
     query_lang = agent.models.generate_content(
         model=TEXT_MODEL,
         contents=f"just reply with the language name of the query language. query: {user_query}\n\n eg; ['english', 'bengali']",
-    ).text
+    ).text.strip()
 
     logger.info(f"Query language: {query_lang}")
 
+    # build the prompt, injecting the detected language
     current_date = datetime.now().strftime("%Y-%m-%d")
     user_prompt = (
-        "\n# Instructions: (Don't use these in response only for reference)"
-        f"\n# Note: 'today': {current_date}"
-        "\n- Use Current Date as date reference."
+        f"\n# Instructions (for function-calling only)"
+        f"\n# 'today' is {current_date}"
+        f"\n# Must reply in language: '{query_lang}'"
+        f"\n- Use Current Date as date reference."
         f"\n- Example: 'yesterday' will be day before {current_date}."
-        "\n- Week start from Sunday, Weekend is Friday and Saturday."
-        "\n- For 'save_expense' function price must be numeric."
-        "\n- Don't use 'save_expense' if no numeric price in query."
-        "\n- Decline function call if price is 0 or not numeric."
-        "\n- Disregard irrelevant terms."
-        "\n- Don't ask for user id, it's given below."
-        f"\nuser_id: '{sender_id}', user_query: '{user_query}', must reply in language: '{query_lang}'. Response:"
+        f"\n- Week start from Sunday, Weekend is Friday and Saturday."
+        f"\n- For 'save_expense' function price must be numeric."
+        f"\n- Don't use 'save_expense' if no numeric price in query."
+        f"\n- Decline function call if price is 0 or not numeric."
+        f"\n- Disregard irrelevant terms."
+        f"\nuser_id: '{sender_id}', user_query: '{user_query}'\nResponse:"
     )
 
     resp = agent.models.generate_content(
         model=TEXT_MODEL, contents=user_prompt, config=func_config
     )
 
-    logger.info(f"LLM response: {resp}")
-
-    calls: list[tuple[str, dict]] = []
+    calls: List[Tuple[str, dict]] = []
     for fc in resp.function_calls:
-        raw = fc.args
         try:
-            args = json.loads(raw) if isinstance(raw, str) else raw
+            args = json.loads(fc.args) if isinstance(fc.args, str) else fc.args
         except json.JSONDecodeError:
-            logger.error(f"Could not parse args for {fc.name}: {raw}")
+            logger.error(f"Could not parse args for {fc.name}: {fc.args}")
             args = {}
         logger.info(f"Function call: {fc.name}, args: {args}")
         calls.append((fc.name, args))
 
-    return calls
+    return calls, query_lang
 
 
-def query_summary(records, query_lang):
-    logger.info(f"whqudhkjashjkdcdqiwd: {query_lang}")
+def query_summary(records, query_lang: str) -> str:
+    logger.info(f"language: {query_lang}")
     prompt = (
         f"NOTE: language list: ['english','bengali'].\n"
         f"User query language: {query_lang}.\n"
@@ -208,7 +213,7 @@ def query_summary(records, query_lang):
     return summary
 
 
-def merge_responses_with_llm(replies: list[str]) -> str:
+def merge_responses_with_llm(replies: List[str]) -> str:
     """
     Ask the LLM to combine multiple bullet points or short sentences
     into one cohesive, friendly reply.
@@ -228,8 +233,8 @@ def handle_text_event(sender_id: str, text: str) -> None:
     Dispatch on all LLM‑determined function calls, accumulate each result,
     then send one merged, natural response.
     """
-    calls = call_intent_llm(sender_id, text)
-    replies: list[str] = []
+    calls, query_lang = call_intent_llm(sender_id, text)
+    replies: List[str] = []
 
     for intent, args in calls:
         args.setdefault("date", datetime.now().strftime("%Y-%m-%d"))
@@ -245,65 +250,48 @@ def handle_text_event(sender_id: str, text: str) -> None:
                     date=args["date"],
                 )
                 replies.append(
-                    f"*{args.get('category','').upper()}* saved! "
-                    f"(৳{args.get('price',0)}, {args['date']})"
+                    f"*{args.get('category','').upper()}* saved!\n\n"
+                    f"*• Amount:* *৳ {args.get('price',0)}*\n"
+                    f"*• Description:* {args.get('description','')}\n"
+                    f"*• Date:* {args['date']}"
                 )
+
             except Exception as e:
                 logger.error(f"Error in save_expense: {e}")
                 replies.append("⚠️ Sorry, I couldn't save one of your expenses.")
 
         elif intent == "get_expenses_by_category":
-            try:
-                category = args.get("category", "")
-                query_lang = args.get("language", "")
-                records = get_expenses_by_category(user_id=sender_id, category=category)
-                if not records:
-                    replies.append(f"No expenses found in category '{category}'.")
-                else:
-                    replies.append(query_summary(records, query_lang))
-            except Exception as e:
-                logger.error(f"Error fetching by category: {e}")
-                replies.append("⚠️ Couldn't retrieve expenses by category.")
+            category = args.get("category", "")
+            records = get_expenses_by_category(user_id=sender_id, category=category)
+            if not records:
+                replies.append(f"No expenses found in category '{category}'.")
+            else:
+                replies.append(query_summary(records, query_lang))
 
         elif intent == "get_expenses_by_date":
-            try:
-                start = args.get("start_date", "")
-                end = args.get("end_date", "")
-                query_lang = args.get("language", "")
-                records = get_expenses_by_date(
-                    user_id=sender_id, start_date=start, end_date=end
-                )
-                if not records:
-                    replies.append(f"No expenses found between {start} and {end}.")
-                else:
-                    replies.append(query_summary(records, query_lang))
-            except Exception as e:
-                logger.error(f"Error fetching by date: {e}")
-                replies.append("⚠️ Couldn't retrieve expenses by date.")
+            start = args.get("start_date", "")
+            end = args.get("end_date", "")
+            records = get_expenses_by_date(
+                user_id=sender_id, start_date=start, end_date=end
+            )
+            if not records:
+                replies.append(f"No expenses found between {start} and {end}.")
+            else:
+                replies.append(query_summary(records, query_lang))
 
         elif intent == "get_all_expenses":
-            try:
-                query_lang = args.get("language", "")
-                records = get_all_expenses(user_id=sender_id)
-                if not records:
-                    replies.append("No expenses found.")
-                else:
-                    replies.append(query_summary(records, query_lang))
-            except Exception as e:
-                logger.error(f"Error fetching all expenses: {e}")
-                replies.append("⚠️ Couldn't retrieve all expenses.")
+            records = get_all_expenses(user_id=sender_id)
+            if not records:
+                replies.append("No expenses found.")
+            else:
+                replies.append(query_summary(records, query_lang))
 
         elif intent == "get_breakdown":
-            try:
-                query_lang = args.get("language", "")
-                records = get_breakdown(user_id=sender_id)
-                if not records:
-                    replies.append("No expenses to break down.")
-                else:
-                    replies.append(query_summary(records, query_lang))
-            except Exception as e:
-                logger.error(f"Error fetching breakdown: {e}")
-                replies.append("⚠️ Couldn't retrieve expense breakdown.")
+            records = get_breakdown(user_id=sender_id)
+            if not records:
+                replies.append("No expenses to break down.")
+            else:
+                replies.append(query_summary(records, query_lang))
 
         elif intent == "greetings":
             replies.append("Hello! How can I help you today?")
